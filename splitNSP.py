@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-# Author: AnalogMan
-# Modified Date: 2018-10-08
+# Original Author: AnalogMan (modified by lord-ne)
 # Purpose: Splits Nintendo Switch NSP files into parts for installation on FAT32
 
 import os
@@ -68,12 +67,12 @@ def splitQuick(filepath):
             nspFile.seek(splitSize * -1, os.SEEK_END)
             nspFile.truncate()
             print('Part {:02} complete'.format(splitNum - (i + 1)))
-    
+
     # Print assurance statement for user
     print('Starting part 00\nPart 00 complete')
 
     print('\nNSP successfully split!\n')
-    
+
 def splitCopy(filepath, output_dir=""):
     fileSize = os.path.getsize(filepath)
     info = shutil.disk_usage(os.path.dirname(os.path.abspath(filepath)))
@@ -140,7 +139,7 @@ def main():
     if os.path.isfile(filepath) == False:
         print('NSP cannot be found\n')
         return 1
-    
+
     # Split NSP file
     if args.quick:
         splitQuick(filepath)
