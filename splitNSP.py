@@ -13,6 +13,7 @@ import stat
 import platform
 import subprocess
 import sys
+import time
 
 class SplitReporter:
     def report_initial_info(self, total_parts: int, total_bytes: int):
@@ -107,7 +108,7 @@ def split(*, input_file_path: Path | str, output_parent_dir: Optional[Path | str
 class ProgressBarSplitReporter(SplitReporter):
     def __init__(self):
         self.last_line_length = 0
-        self.last_bytes = 0
+        self.last_print_time = time.time()
 
     def _printmsg(self, msg: str, end: str = '\n'):
         print(f'{msg:<{self.last_line_length}}', end = end)
@@ -127,11 +128,11 @@ class ProgressBarSplitReporter(SplitReporter):
 
     @override
     def report_file_progress(self, written_bytes: int, total_bytes: int):
-
-        if written_bytes - self.last_bytes < 10_000_000:
+        curr_time = time.time()
+        if curr_time - self.last_print_time < 0.05:
             return
 
-        self.last_bytes = written_bytes
+        self.last_print_time = curr_time
 
         total_string = f'{total_bytes:,d}'
         written_string = f'{written_bytes:{len(total_string)},d}'
