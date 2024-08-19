@@ -52,26 +52,25 @@ def _try_set_archive_bit(folder: Path):
 
     return True
 
-def split(*, input_file_path: Path | str, output_parent_dir: Optional[Path | str] = None, output_dir: Optional[Path | str] = None, reporter: SplitReporter):
+def split(*, input_file_path: Path | str, output_parent_dir: Optional[Path | str] = None, reporter: SplitReporter):
 
     # Constants
 
     PART_SIZE = 0xFFFF0000 # 4,294,901,760 bytes
     CHUNK_SIZE = 0x8000 # 32,768 bytes
 
-    # Argument types and default values
+    # Argument parsing
 
     if not isinstance(input_file_path, Path):
         input_file_path = Path(input_file_path)
 
-    if output_dir is None:
-        output_name = f'{input_file_path.stem}_split{input_file_path.suffix}'
-        if output_parent_dir is None:
-            output_dir = input_file_path.with_name(output_name)
-        else:
-            output_dir = Path(output_parent_dir) / output_name
-    elif not isinstance(output_dir, Path):
-        output_dir = Path(output_dir)
+    output_basename = f'{input_file_path.stem}_split{input_file_path.suffix}'
+    if output_parent_dir is None:
+        output_dir = input_file_path.with_name(output_basename)
+    else:
+        if not isinstance(output_parent_dir, Path):
+            output_parent_dir = Path(output_parent_dir)
+        output_dir = output_parent_dir / output_basename
 
     # Validation
 
@@ -85,6 +84,8 @@ def split(*, input_file_path: Path | str, output_parent_dir: Optional[Path | str
             raise ValueError(f'{output_dir} is not a folder')
         elif not (len(os.listdir(output_dir)) == 0):
             raise ValueError(f'{output_dir} is not empty')
+
+    # Implementation
 
     input_file_size = os.path.getsize(input_file_path)
     info = shutil.disk_usage(os.path.dirname(os.path.abspath(input_file_path)))
@@ -160,13 +161,14 @@ def _main():
     # Arg parser for program options
     parser = argparse.ArgumentParser(description='Split NSP/XCI files into FAT32 compatible sizes')
     parser.add_argument('input_file_path', help='Path to NSP or XCI file')
-    parser.add_argument('-o', '--output-dir', type=str, default=None, help='Set alternative output dir')
+    parser.add_argument('-o', '--output-parent-dir', type=str, default=None, 
+                        help='The directory in which to create the _split.nsp folder')
 
     args = parser.parse_args()
 
     try:
         split(input_file_path = args.input_file_path,
-            output_dir = args.output_dir,
+            output_parent_dir = args.output_parent_dir,
             reporter=_ProgressBarSplitReporter())
     except Exception as e:
         print(e)
