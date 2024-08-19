@@ -2,18 +2,20 @@
 # Original Author: AnalogMan (modified by lord_ne)
 # Purpose: Splits Nintendo Switch NSP files into parts for installation on FAT32
 
-import os
+# Note: This script can be run stand-alone without any packages installed
+
 import argparse
-import shutil
-from pathlib import Path
-from typing import Optional
 import math
-from typing import override
-import stat
+import os
 import platform
+import shutil
+import stat
 import subprocess
 import sys
 import time
+from pathlib import Path
+from typing import Optional
+from typing import override
 
 class SplitReporter:
     def report_initial_info(self, total_parts: int, total_bytes: int):
@@ -29,7 +31,7 @@ class SplitReporter:
         pass
 
 # This method makes a best-effort to set the archive bit, but on many operating systems it will not succeed
-def try_set_archive_bit(folder: Path):
+def _try_set_archive_bit(folder: Path):
     try:
         if platform.system == 'Windows':
             subprocess.run(['attrib', '+a', os.path.realpath(folder)], check=True)
@@ -103,9 +105,9 @@ def split(*, input_file_path: Path | str, output_parent_dir: Optional[Path | str
                     reporter.report_file_progress(total_written, input_file_size)
             reporter.report_finish_part(i, total_parts)
 
-    try_set_archive_bit(output_dir)
+    _try_set_archive_bit(output_dir)
 
-class ProgressBarSplitReporter(SplitReporter):
+class _ProgressBarSplitReporter(SplitReporter):
     def __init__(self):
         self.last_line_length = 0
         self.last_print_time = time.time()
@@ -143,7 +145,7 @@ class ProgressBarSplitReporter(SplitReporter):
 
         self.last_line_length = this_line_length
 
-def main():
+def _main():
     print('\n========== NSP Splitter ==========\n')
 
     # Arg parser for program options
@@ -156,7 +158,7 @@ def main():
     try:
         split(input_file_path = args.input_file_path,
             output_dir = args.output_dir,
-            reporter=ProgressBarSplitReporter())
+            reporter=_ProgressBarSplitReporter())
     except Exception as e:
         print(e)
         return 1
@@ -164,4 +166,4 @@ def main():
     print('\n============== Done ==============\n')
 
 if __name__ == '__main__':
-    main()
+    _main()
