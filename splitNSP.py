@@ -1,150 +1,166 @@
 #!/usr/bin/env python3
-# Original Author: AnalogMan (modified by lord-ne)
+# Original Author: AnalogMan (modified by lord_ne)
 # Purpose: Splits Nintendo Switch NSP files into parts for installation on FAT32
 
 import os
 import argparse
 import shutil
-from datetime import datetime
-startTime = datetime.now()
+from pathlib import Path
+from typing import Optional
+import math
+from typing import override
+import stat
+import platform
+import subprocess
+import sys
 
-splitSize = 0xFFFF0000 # 4,294,901,760 bytes
-chunkSize = 0x8000 # 32,768 bytes
+class SplitReporter:
+    def report_initial_info(self, total_parts: int, total_bytes: int):
+        pass
 
-def splitQuick(filepath):
-    fileSize = os.path.getsize(filepath)
-    info = shutil.disk_usage(os.path.dirname(os.path.abspath(filepath)))
-    if info.free < splitSize:
-        print('Not enough temporary space. Needs 4GiB of free space\n')
-        return
-    print('Calculating number of splits...\n')
-    splitNum = int(fileSize/splitSize)
-    if splitNum == 0:
-        print('This NSP is under 4GiB and does not need to be split.\n')
-        return
+    def report_start_part(self, part_number: int, total_parts: int):
+        pass
 
-    print('Splitting NSP into {0} parts...\n'.format(splitNum + 1))
-    
-    # Create directory, delete if already exists
-    dir = filepath[:-4] + '_split.nsp'
-    if os.path.exists(dir):
-        shutil.rmtree(dir)
-    os.makedirs(dir)
+    def report_finish_part(self, part_number: int, total_parts: int):
+        pass
 
-    # Move input file to directory and rename it to first part
-    filename = os.path.basename(filepath)
-    shutil.move(filepath, os.path.join(dir, '00'))
-    filepath = os.path.join(dir, '00')
+    def report_file_progress(self, written_bytes: int, total_bytes: int):
+        pass
 
-    # Calculate size of final part to copy first
-    finalSplitSize = fileSize - (splitSize * splitNum)
+# This method makes a best-effort to set the archive bit, but on many operating systems it will not succeed
+def try_set_archive_bit(folder: Path):
+    try:
+        if platform.system == 'Windows':
+            subprocess.run(['attrib', '+a', os.path.realpath(folder)], check=True)
+        else:
+            os.chflags(os.stat(folder) | stat.SF_ARCHIVED)
+    except Exception as e:
+        print(f'Could not set archive bit ({e})')
+        return False
 
-    # Copy final part and trim from main file
-    with open(filepath, 'r+b') as nspFile:
-        nspFile.seek(finalSplitSize * -1, os.SEEK_END)
-        outFile = os.path.join(dir, '{:02}'.format(splitNum))
-        partSize = 0
-        print('Starting part {:02}'.format(splitNum))
-        with open(outFile, 'wb') as splitFile:
-            while partSize < finalSplitSize:
-                splitFile.write(nspFile.read(chunkSize))
-                partSize += chunkSize
-        nspFile.seek(finalSplitSize * -1, os.SEEK_END)
-        nspFile.truncate()
-        print('Part {:02} complete'.format(splitNum))
+    return True
 
-    # Loop through additional parts and trim
-    with open(filepath, 'r+b') as nspFile:
-        for i in range(splitNum - 1):
-            nspFile.seek(splitSize * -1, os.SEEK_END)
-            outFile = os.path.join(dir, '{:02}'.format(splitNum - (i + 1)))
-            partSize = 0
-            print('Starting part {:02}'.format(splitNum - (i + 1)))
-            with open(outFile, 'wb') as splitFile:
-                 while partSize < splitSize:
-                    splitFile.write(nspFile.read(chunkSize))
-                    partSize += chunkSize
-            nspFile.seek(splitSize * -1, os.SEEK_END)
-            nspFile.truncate()
-            print('Part {:02} complete'.format(splitNum - (i + 1)))
+def split(*, input_file_path: Path | str, output_parent_dir: Optional[Path | str] = None, output_dir: Optional[Path | str] = None, reporter: SplitReporter):
 
-    # Print assurance statement for user
-    print('Starting part 00\nPart 00 complete')
+    # Constants
 
-    print('\nNSP successfully split!\n')
+    PART_SIZE = 0xFFFF0000 # 4,294,901,760 bytes
+    CHUNK_SIZE = 0x8000 # 32,768 bytes
 
-def splitCopy(filepath, output_dir=""):
-    fileSize = os.path.getsize(filepath)
-    info = shutil.disk_usage(os.path.dirname(os.path.abspath(filepath)))
-    if info.free < fileSize*2:
-        print('Not enough free space to run. Will require twice the space as the NSP file\n')
-        return
-    print('Calculating number of splits...\n')
-    splitNum = int(fileSize/splitSize)
-    if splitNum == 0:
-        print('This NSP is under 4GiB and does not need to be split.\n')
-        return
-    
-    print('Splitting NSP into {0} parts...\n'.format(splitNum + 1))
+    # Argument types and default values
 
-    # Create directory, delete if already exists
-    if output_dir == "":
-        dir = filepath[:-4] + '_split.nsp'
+    if not isinstance(input_file_path, Path):
+        input_file_path = Path(input_file_path)
+
+    if output_dir is None:
+        output_name = f'{input_file_path.stem}_split{input_file_path.suffix}'
+        if output_parent_dir is None:
+            output_dir = input_file_path.with_name(output_name)
+        else:
+            output_dir = Path(output_parent_dir) / output_name
+    elif not isinstance(output_dir, Path):
+        output_dir = Path(output_dir)
+
+    # Validation
+
+    if not input_file_path.is_file():
+        raise ValueError(f'{input_file_path} is not a file')
+
+    if not output_dir.exists():
+        os.makedirs(output_dir)
     else:
-        if output_dir[-4:] != '.nsp':
-            output_dir+= ".nsp"
-        dir = output_dir
-    if os.path.exists(dir):
-        shutil.rmtree(dir)
-    os.makedirs(dir)
+        if not output_dir.is_dir():
+            raise ValueError(f'{output_dir} is not a folder')
+        elif not (len(os.listdir(output_dir)) == 0):
+            raise ValueError(f'{output_dir} is not empty')
 
-    remainingSize = fileSize
+    input_file_size = os.path.getsize(input_file_path)
+    info = shutil.disk_usage(os.path.dirname(os.path.abspath(input_file_path)))
+    if info.free < input_file_size * 2:
+        raise ValueError('Not enough free space to run. Will require twice the space as the NSP file')
 
-    # Open source file and begin writing to output files stoping at splitSize
-    with open(filepath, 'rb') as nspFile:
-        for i in range(splitNum + 1):
-            partSize = 0
-            print('Starting part {:02}'.format(i))
-            outFile = os.path.join(dir, '{:02}'.format(i))
-            with open(outFile, 'wb') as splitFile: 
-                if remainingSize > splitSize:
-                    while partSize < splitSize:
-                        splitFile.write(nspFile.read(chunkSize))
-                        partSize += chunkSize
-                    remainingSize -= splitSize
-                else:
-                    while partSize < remainingSize:
-                        splitFile.write(nspFile.read(chunkSize))
-                        partSize += chunkSize
-            print('Part {:02} complete'.format(i))
-    print('\nNSP successfully split!\n')
+    if input_file_size <= PART_SIZE:
+        raise ValueError('This NSP is under 4GiB and does not need to be split.')
+
+    total_parts = math.ceil(input_file_size / PART_SIZE)
+
+    reporter.report_initial_info(total_parts, input_file_size)
+
+    # Open source file and begin writing to output files stoping at PART_SIZE
+    total_written = 0
+    with open(input_file_path, 'rb') as in_file:
+        for i in range(total_parts):
+            reporter.report_start_part(i, total_parts)
+            this_part_size = min(PART_SIZE, input_file_size - total_written)
+            this_part_written = 0
+            with open(output_dir / f'{i:02}', 'wb') as out_file:
+                while this_part_written < this_part_size:
+                    this_chunk_size = min(CHUNK_SIZE, this_part_size - this_part_written)
+                    out_file.write(in_file.read(this_chunk_size))
+                    this_part_written += this_chunk_size
+                    total_written += this_chunk_size
+                    reporter.report_file_progress(total_written, input_file_size)
+            reporter.report_finish_part(i, total_parts)
+
+    try_set_archive_bit(output_dir)
+
+class ProgressBarSplitReporter(SplitReporter):
+    def __init__(self):
+        self.last_line_length = 0
+        self.last_bytes = 0
+
+    def _printmsg(self, msg: str, end: str = '\n'):
+        print(f'{msg:<{self.last_line_length}}', end = end)
+        sys.stdout.flush()
+
+    @override
+    def report_initial_info(self, total_parts: int, total_bytes: int):
+        self._printmsg(f'Splitting NSP of size {total_bytes:,d} bytes into {total_parts} parts...')
+
+    @override
+    def report_start_part(self, part_number: int, total_parts: int):
+        self._printmsg(f'Starting part {part_number + 1:02} of {total_parts:02}')
+
+    @override
+    def report_finish_part(self, part_number: int, total_parts: int):
+        self._printmsg(f'Part {part_number + 1:02} of {total_parts:02} complete')
+
+    @override
+    def report_file_progress(self, written_bytes: int, total_bytes: int):
+
+        if written_bytes - self.last_bytes < 10_000_000:
+            return
+
+        self.last_bytes = written_bytes
+
+        total_string = f'{total_bytes:,d}'
+        written_string = f'{written_bytes:{len(total_string)},d}'
+        msg = f'   {written_string} / {total_string} bytes'
+        this_line_length = len(msg)
+
+        self._printmsg(msg, end='\r')
+
+        self.last_line_length = this_line_length
 
 def main():
     print('\n========== NSP Splitter ==========\n')
 
     # Arg parser for program options
-    parser = argparse.ArgumentParser(description='Split NSP files into FAT32 compatible sizes')
-    parser.add_argument('filepath', help='Path to NSP file')
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument('-q', '--quick', action='store_true', help='Splits file in-place without creating a copy. Only requires 4GiB free space to run')
-    group.add_argument('-o', '--output-dir', type=str, default="",
-                        help="Set alternative output dir")
+    parser = argparse.ArgumentParser(description='Split NSP/XCI files into FAT32 compatible sizes')
+    parser.add_argument('input_file_path', help='Path to NSP or XCI file')
+    parser.add_argument('-o', '--output-dir', type=str, default=None, help='Set alternative output dir')
 
-    # Check passed arguments
     args = parser.parse_args()
 
-    filepath = args.filepath
-
-    # Check if required files exist
-    if os.path.isfile(filepath) == False:
-        print('NSP cannot be found\n')
+    try:
+        split(input_file_path = args.input_file_path,
+            output_dir = args.output_dir,
+            reporter=ProgressBarSplitReporter())
+    except Exception as e:
+        print(e)
         return 1
 
-    # Split NSP file
-    if args.quick:
-        splitQuick(filepath)
-    else:
-        splitCopy(filepath, args.output_dir)
+    print('\n============== Done ==============\n')
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
