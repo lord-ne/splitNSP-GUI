@@ -8,6 +8,7 @@ import argparse
 import math
 import os
 import platform
+import re
 import shutil
 import stat
 import subprocess
@@ -33,10 +34,18 @@ class SplitReporter:
 # This method makes a best-effort to set the archive bit, but on many operating systems it will not succeed
 def _try_set_archive_bit(folder: Path):
     try:
+        p = os.path.realpath(folder)
         if platform.system == 'Windows':
-            subprocess.run(['attrib', '+a', os.path.realpath(folder)], check=True)
+            subprocess.run(['attrib', '+a', p], check=True)
         else:
-            os.chflags(os.stat(folder) | stat.SF_ARCHIVED)
+            output = subprocess.check_output(['getfattr', '-e', 'hex', '-n', 'system.ntfs_attrib_be', p], 
+                                             text=True,
+                                             stderr=subprocess.DEVNULL)
+            m = re.search(r'^system.ntfs_attrib_be=(0x[0-9a-fA-F]{8})$', output, flags=re.MULTILINE)
+            attrs = int(m.group(1), base=16)
+            attrs |= 0x20 # FILE_ATTRIBUTE_ARCHIVE
+            attrs_str = f'0x{attrs:08x}'
+            subprocess.run(['setfattr', '-v', attrs_str, '-n', 'system.ntfs_attrib_be', p], check=True)
     except Exception as e:
         print(f'Could not set archive bit ({e})')
         return False
