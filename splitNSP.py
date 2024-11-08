@@ -10,13 +10,11 @@ import os
 import platform
 import re
 import shutil
-import stat
 import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Optional
-from typing import override
+from typing import Optional, override
 
 class SplitReporter:
     def report_initial_info(self, total_parts: int, total_bytes: int):
@@ -30,9 +28,12 @@ class SplitReporter:
 
     def report_file_progress(self, written_bytes: int, total_bytes: int):
         pass
+    
+    def report_set_archive_bit(self, error_msg: Optional[str]):
+        pass
 
 # This method makes a best-effort to set the archive bit, but on many operating systems it will not succeed
-def _try_set_archive_bit(folder: Path):
+def _try_set_archive_bit(folder: Path) -> Optional[str]:
     try:
         p = os.path.realpath(folder)
         if platform.system == 'Windows':
@@ -47,10 +48,9 @@ def _try_set_archive_bit(folder: Path):
             attrs_str = f'0x{attrs:08x}'
             subprocess.run(['setfattr', '-v', attrs_str, '-n', 'system.ntfs_attrib_be', p], check=True)
     except Exception as e:
-        print(f'Could not set archive bit ({e})')
-        return False
+        return str(e)
 
-    return True
+    return None
 
 def split(*, input_file_path: Path | str, output_parent_dir: Optional[Path | str] = None, reporter: SplitReporter):
 
@@ -61,15 +61,13 @@ def split(*, input_file_path: Path | str, output_parent_dir: Optional[Path | str
 
     # Argument parsing
 
-    if not isinstance(input_file_path, Path):
-        input_file_path = Path(input_file_path)
+    input_file_path = Path(input_file_path)
 
     output_basename = f'{input_file_path.stem}_split{input_file_path.suffix}'
     if output_parent_dir is None:
         output_dir = input_file_path.with_name(output_basename)
     else:
-        if not isinstance(output_parent_dir, Path):
-            output_parent_dir = Path(output_parent_dir)
+        output_parent_dir = Path(output_parent_dir)
         output_dir = output_parent_dir / output_basename
 
     # Validation
@@ -115,7 +113,7 @@ def split(*, input_file_path: Path | str, output_parent_dir: Optional[Path | str
                     reporter.report_file_progress(total_written, input_file_size)
             reporter.report_finish_part(i, total_parts)
 
-    _try_set_archive_bit(output_dir)
+    reporter.report_set_archive_bit(_try_set_archive_bit(output_dir))
 
 class _ProgressBarSplitReporter(SplitReporter):
     def __init__(self):
@@ -154,6 +152,14 @@ class _ProgressBarSplitReporter(SplitReporter):
         self._printmsg(msg, end='\r')
 
         self.last_line_length = this_line_length
+
+    @override
+    def report_set_archive_bit(self, error_msg: Optional[str]):
+        if not error_msg:
+            self._printmsg(f'Succesfully set archive bit')
+        else:
+            self._printmsg(f'Could not set archive bit ({error_msg})')
+
 
 def _main():
     print('\n========== NSP Splitter ==========\n')
